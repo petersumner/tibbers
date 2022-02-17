@@ -1,155 +1,85 @@
-import os
-import sys
-import requests
-import json
-import re
 import discord
+import os
+import requests
+import random
+
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from riotwatcher import LolWatcher
+from keep_alive import keep_alive
+from data import LANES, PATCH, COLOR, QUEUES, FRIENDLY, QUOTES
 
-from data import LANES, PATCH, RIOTKEY
+STORY_LINKS = []
 
-class Driver:
-    def __init__(self, champion, region, lane, queue):
-        self.champion = champion
+class Scraper:
+    def __init__(self, champion, region, lane, queue, opponent):
+        self.champion = champion.replace("'", "")
         self.region = region
         self.lane = lane
         self.queue = queue
-        self.url = "https://u.gg/lol/champions/"+self.champ+"/build?queueType="+self.queue
+        self.opponent = opponent
+        self.set_url()
+        self.runes = {}
+
+    def set_url(self):
+        self.url = "https://u.gg/lol/champions/"+self.champion+"/build"
+        if self.queue == 'normal_draft_5x5' or self.queue == 'normal_blind_5x5':
+          self.url += "?queueType="+self.queue
+        else:
+          self.url += "?rank="+self.queue
         if self.lane:
-            self.url += '&role=' + lane
+            self.url += '&role=' + self.lane
 
-    def config(self):
-        self.watcher = LolWatcher(RIOTKEY)
-        if not self.is_champ():
-            print('in class')
-            return {}
-
-        options = Options()
-        options.headless = True
-        options.add_argument('--ignore-certificate-errors')
-        options.add_argument('--ignore-ssl-errors')
-        driver_path = "chromedriver.exe"
-        ser = Service(driver_path)
-        self.driver = webdriver.Chrome(options=options, service=ser)
-        self.driver.get(self.url)
+    def get_html(self):
+        page = requests.get(self.url)
+        self.soup = BeautifulSoup(page.content, "html.parser")
 
     def get_runes(self):
-        primary_element = self.driver.find_element(By.XPATH, "//div[@class='rune-tree_v2 primary-tree']//div[@class='perk-style-title']")
-        secondary_element = self.driver.find_element(By.XPATH, "//div[@class='secondary-tree']//div[@class='perk-style-title']")
-        
-        keystone_element = primary_element.find_element(By.XPATH, "//div[@class='perks']//div[@class='perk keystone perk-active']/img")
-        keystone = keystone_element.get_attribute('alt').replace("The Keystone ", "")
+        # Rune Trees
+        trees = self.soup.find_all(class_="perk-style-title")
+        self.runes.update({'Primary': trees[0].text})
+        self.runes.update({'Secondary': trees[1].text})
 
-        perk_elements = primary_element.find_elements(By.XPATH, "//div[@class='perk perk-active']/img")
-        perks = []
-        for perk in perk_elements:
-            p = perk.get_attribute("alt").replace("The Rune ", "")
-            if p not in perks:
-                perks.append(p)
+        # Keystone Rune
+        keystone = self.soup.find(class_="perk keystone perk-active")
+        keystone = keystone.find("img").extract()['alt'].replace("The Keystone ", "")
+        self.runes.update({'Keystone': keystone})
 
-        shard_elements = primary_element.find_elements(By.XPATH, "//div[@class='champion-profile-page']//div[@class='shard shard-active']/img")
-        shards = []
-        for shard in shard_elements:
-            s = shard.get_attribute("alt").replace("The ", "").replace(" Shard", "")
-            shards.append(s)
+        # Other Runes
+        perks = self.soup.find_all("div", class_="perk perk-active")
+        for perk in perks[:5]:
+            perks[perks.index(perk)] = (perk.find("img").extract()['alt'].replace("The Rune ", ""))
+        self.runes.update({'PrimaryPerks': perks[:3]})
+        self.runes.update({'SecondaryPerks': perks[3:5]})
 
-        runes = {
-            'Primary': primary_element.text,
-            'Secondary': secondary_element.text,
-            'Keystone': keystone,
-            'PrimaryPerks': perks[:3],
-            'SecondaryPerks': perks[3:],
-            'Shards': shards[:3]
-        }
-        
-        self.driver.quit()
-        return runes
-
-    def is_champ(self):
-        versions = self.watcher.data_dragon.versions_for_region(self.region)
-        champions_versions = versions['n']['champion']
-        current_champion_list = self.watcher.dta_dragon.champions(champions_versions)
-        if self.champ.lower().capitalize() not in current_champion_list['data']:
-            return False
-
-    def get_lane(self):
-        return ""
-
-
-def scrape(champ, region, lane):
-    lol_watcher = LolWatcher(RIOTKEY)
-    versions = lol_watcher.data_dragon.versions_for_region(region)
-    champions_version = versions['n']['champion']
-    current_champ_list = lol_watcher.data_dragon.champions(champions_version)
-
-    if champ not in current_champ_list['data']:
-        print("not in class")
-        return {}
-
-    options = Options()
-    options.headless = True
-    options.add_argument('--ignore-certificate-errors')
-    options.add_argument('--ignore-ssl-errors')
-
-    driver_path = "chromedriver.exe"
-    ser = Service(driver_path)
-    driver = webdriver.Chrome(options=options, service=ser)
-
-    url = "https://u.gg/lol/champions/"+champ+"/build?queueType=normal_draft_5x5"
-    if lane:
-        url += '&role=' + lane
-
-    driver.get(url)
-    runes = get_runes(driver, champ)
-    driver.quit()
-    return runes
-
-def get_runes(driver, champ):
-    primary_element = driver.find_element(By.XPATH, "//div[@class='rune-tree_v2 primary-tree']//div[@class='perk-style-title']")
-    secondary_element = driver.find_element(By.XPATH, "//div[@class='secondary-tree']//div[@class='perk-style-title']")
-    
-    keystone_element = primary_element.find_element(By.XPATH, "//div[@class='perks']//div[@class='perk keystone perk-active']/img")
-    keystone = keystone_element.get_attribute('alt').replace("The Keystone ", "")
-
-    perk_elements = primary_element.find_elements(By.XPATH, "//div[@class='perk perk-active']/img")
-    perks = []
-    for perk in perk_elements:
-        p = perk.get_attribute("alt").replace("The Rune ", "")
-        if p not in perks:
-            perks.append(p)
-
-    shard_elements = primary_element.find_elements(By.XPATH, "//div[@class='champion-profile-page']//div[@class='shard shard-active']/img")
-    shards = []
-    for shard in shard_elements:
-        s = shard.get_attribute("alt").replace("The ", "").replace(" Shard", "")
-        shards.append(s)
-
-    runes = {
-        'Primary': primary_element.text,
-        'Secondary': secondary_element.text,
-        'Keystone': keystone,
-        'PrimaryPerks': perks[:3],
-        'SecondaryPerks': perks[3:],
-        'Shards': shards[:3]
-    }
-
-    return runes
+        # Shards
+        shards = self.soup.find_all("div", class_="shard shard-active")
+        for shard in shards[:3]:
+            s = (shard.find("img").extract()['alt'].replace("The ", "").replace(" Shard", ""))
+            if s == "Scaling CDR":
+                shards[shards.index(shard)] = "Ability Haste"
+            elif s == "Scaling Bonus Health":
+                shards[shards.index(shard)] = "Health"
+            else:
+                shards[shards.index(shard)] = s
+        self.runes.update({'Shards': shards[:3]})
 
 def get_region(region):
     return 'na1'
+
+def get_data(args, type):
+    for arg in args:
+        for x in type:
+            if arg.lower() in type[x]:
+                return [x, arg.lower()]
+    return []
 
 def get_lane(args):
     for arg in args:
         for lane in LANES:
             if arg.lower() in LANES[lane]:
-                return lane
-    return ''
+                return [lane, arg.lower()]
+    return []
 
 if __name__ == "__main__":
     client = discord.Client()
@@ -169,28 +99,71 @@ if __name__ == "__main__":
             args.remove('!t')
 
             if 'help' in args:
-                await message.channel.send('help coming soon <3')
+                embed = discord.Embed(title="Tibbers Help", description="For all commands: [*mandatory* field], (*optional* field)", color=COLOR)
+                embed.add_field(name="Command: runes", value="```!t runes [champion] (lane) (queue_type)```", inline=False)
+                embed.add_field(name="Can I see my field options?", value='```!t [field_name]?```', inline=False)
+                embed.add_field(name="Still stuck?", value="If Tibbers isn't responding ask @oatmeal if he's asleep", inline=False)
+                await message.channel.send(embed=embed)
+
             elif args == []:
                 await message.channel.send('whoops you forgot to add a command')
+
+            elif 'queue_type?' in args:
+                embed = discord.Embed(title="Tibbers approved queue types", description=(", ".join(FRIENDLY['queues'])), color=COLOR)
+                await message.channel.send(embed=embed)
+
+            elif 'lane?' in args or 'lanes?' in args:
+                embed = discord.Embed(title="Tibbers approved lanes", description=(", ".join(FRIENDLY['lanes'])+"\n*You can also shorten to the first letter of the lane*"), color=COLOR)
+                await message.channel.send(embed=embed)
+
+            elif 'champion?' in args:
+                embed = discord.Embed(title="Do you really need help with this one?", description="Any champ name, just spell it right", color=COLOR)
+                await message.channel.send(embed=embed)
+
+            elif 'field_name?' in args:
+                embed = discord.Embed(title="Grr", description="queue_type, lane", color=COLOR)
+                await message.channel.send(embed=embed)
+    
             elif 'runes' in args:
                 args.remove('runes')
-                lane = get_lane(args)
-                if lane != '':
-                    args.remove(lane)
+                lane = get_data(args, LANES)
+                if lane != []:
+                    args.remove(lane[1])
+                    lane = lane[0]
+                else: 
+                    lane = ''
+
+                queue = get_data(args, QUEUES)
+                if queue != []:
+                    args.remove(queue[1])
+                    queue = queue[0]
+                else:
+                    queue = 'normal_draft_5x5'
+              
                 for i in range(len(args)):
                     args[i] = args[i].lower().capitalize()
-                runes = scrape(("".join(args)), 'na1', lane)
-                if runes == {}:
+                 
+                scraper = Scraper(("".join(args)), 'na1', lane, queue, '')
+              
+                scraper.get_html()
+                scraper.get_runes()
+              
+                if scraper.runes == {}:
                     await message.channel.send("whoops that champion doesn't exist")
                 else:
-                    embed = discord.Embed(title=(" ".join(args)) + ' Runes', color=0x2ecfe8)
-                    embed.add_field(name='**__'+runes['Primary']+'__**', value='__'+runes['Keystone']+'__\n'+'\n'.join(runes['PrimaryPerks']), inline=False)
-                    embed.add_field(name='**__'+runes['Secondary']+'__**', value='\n'.join(runes['SecondaryPerks']), inline=False)
-                    embed.add_field(name="Shards", value='\n'.join(runes['Shards']), inline=False)
-                    embed.set_thumbnail(url="https://static.u.gg/assets/lol/riot_static/12.3.1/img/champion/"+("".join(args))+".png")
+                    if scraper.champion in QUOTES:
+                      embed = discord.Embed(title=(" ".join(args)) + ' Runes', description="*"+random.choice(QUOTES[scraper.champion])+"*", color=COLOR)
+                    else:
+                      embed = discord.Embed(title=(" ".join(args)) + ' Runes', color=COLOR)
+                    embed.add_field(name='**__'+scraper.runes['Primary']+'__**', value='__'+scraper.runes['Keystone']+'__\n'+'\n'.join(scraper.runes['PrimaryPerks']), inline=False)
+                    embed.add_field(name='**__'+scraper.runes['Secondary']+'__**', value='\n'.join(scraper.runes['SecondaryPerks']), inline=False)
+                    embed.add_field(name="Shards", value='\n'.join(scraper.runes['Shards']), inline=False)
+                    embed.set_thumbnail(url="https://static.u.gg/assets/lol/riot_static/"+PATCH+".1/img/champion/"+("".join(args)).replace("'", "")+".png")
                     await message.channel.send(embed=embed)
+                    print('Fetched runes for '+scraper.champion)
             else:
                 await message.channel.send('command not recognized')
-
+              
+    keep_alive()
     load_dotenv('.env')
     client.run(os.getenv('TOKEN'))
